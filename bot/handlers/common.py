@@ -9,7 +9,8 @@ from aiogram import Bot
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from ..config import Config
-from ..shop import flag, term_label
+from .. import locations
+from ..shop import term_label
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def fmt_dt(iso: str | None, cfg: Config) -> str:
 
 
 def location_name(country_code: str | None, title: str | None) -> str:
-    return f"{flag(country_code)} {title or country_code or '—'}"
+    return locations.display(country_code, title)
 
 
 def proxies_text(proxies: list[dict]) -> str:

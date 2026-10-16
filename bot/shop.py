@@ -28,13 +28,9 @@ def term_label(days: int) -> str:
     return f"{days} дней"
 
 
-FLAGS_BASE = 0x1F1E6
-
-
 def flag(country_code: str | None) -> str:
-    if not country_code or len(country_code) != 2 or not country_code.isalpha():
-        return "🌐"
-    return "".join(chr(FLAGS_BASE + ord(c) - ord("A")) for c in country_code.upper())
+    from .locations import flag as _flag, parse
+    return _flag(parse(country_code, None)[0])
 
 
 @dataclass

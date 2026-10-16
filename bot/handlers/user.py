@@ -11,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from .. import locations
 from ..config import Config
 from ..db import Database, fmt_rub, to_kop
 from ..shop import Shop, ShopError
@@ -121,15 +122,17 @@ async def buy_types(call: CallbackQuery, shop: Shop):
 @router.callback_query(BuyCB.filter(F.step == "type"))
 async def buy_type(call: CallbackQuery, callback_data: BuyCB, shop: Shop):
     locs = await shop.locations(callback_data.t)
-    kb = InlineKeyboardBuilder()
-    shown = 0
-    for loc in sorted(locs, key=lambda l: l.title):
+    available = []
+    for loc in locs:
         prices = [p for d in loc.term_options
                   if (p := await shop.unit_sell_price(loc.proxy_type, loc.node_id, d)) is not None]
-        if not prices:
-            continue
-        shown += 1
-        kb.button(text=f"{location_name(loc.country_code, loc.title)} · от {fmt_rub(min(prices))}",
+        if prices:
+            available.append((loc, min(prices)))
+    names = locations.display_many([(loc.country_code, loc.title) for loc, _ in available])
+    kb = InlineKeyboardBuilder()
+    shown = len(available)
+    for name, (loc, price) in sorted(zip(names, available), key=lambda x: (x[0].split(" ", 1)[-1], x[1][1])):
+        kb.button(text=f"{name} · от {fmt_rub(price)}",
                   callback_data=BuyCB(step="loc", t=loc.proxy_type, n=loc.node_id))
     kb.adjust(1)
     kb.row(btn("« Назад", BuyCB(step="types")))
