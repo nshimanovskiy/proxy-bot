@@ -26,6 +26,16 @@ pause() { read -rp "$1 — затем нажмите Enter… " _ </dev/tty; }
 [ "$(id -u)" -eq 0 ] || die "Запустите от root: sudo $0 ВЛАДЕЛЕЦ/РЕПОЗИТОРИЙ"
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "Укажите репозиторий: $0 ВЛАДЕЛЕЦ/РЕПОЗИТОРИЙ (например, nshimanovskiy/proxy-bot)"
 [ -f docker-compose.yml ] || die "Запускайте из папки проекта (там, где docker-compose.yml)"
+# Защита от запуска не в той папке: скрипт заменяет все файлы папки версией из репозитория
+[ -f bot/main.py ] && [ -f deploy/check.sh ] || \
+  die "Это не папка бота (нет bot/main.py). Перейдите в папку proxy-bot, например: cd /opt/proxy-bot"
+if [ -d .git ]; then
+  CUR="$(git remote get-url origin 2>/dev/null || true)"
+  CUR_REPO="$(printf '%s' "$CUR" | sed -E 's#^.*[:/]([^/:]+/[^/]+)$#\1#; s#\.git$##')"
+  if [ -n "$CUR" ] && [ "${CUR_REPO,,}" != "${REPO,,}" ]; then
+    die "Папка уже подключена к ${CUR_REPO}, а вы указали ${REPO}. Если это точно нужно — удалите .git и запустите снова."
+  fi
+fi
 command -v git >/dev/null || { apt-get update -y >/dev/null; apt-get install -y git >/dev/null; }
 
 SSH_DIR=/root/.ssh
