@@ -6,6 +6,9 @@ services:
     env_file: .env
     environment:
       DB_PATH: /app/data/shop.db
+    extra_hosts:
+      # чтобы бот мог дойти до прокси, запущенного на самом сервере
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
     logging:

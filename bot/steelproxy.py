@@ -42,12 +42,14 @@ class SteelProxyUnknownResult(Exception):
 
 class SteelProxyClient:
     def __init__(self, api_key: str, base_url: str = "https://api.steelproxy.com/v1",
-                 transport: httpx.AsyncBaseTransport | None = None):
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 proxy: str | None = None):
         self._client = httpx.AsyncClient(
             base_url=base_url,
             headers={"X-API-Key": api_key, "Accept": "application/json"},
             timeout=httpx.Timeout(60.0, connect=10.0),
             transport=transport,
+            proxy=proxy,
         )
 
     async def close(self) -> None:

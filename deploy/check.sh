@@ -20,5 +20,11 @@ for i in $(seq 1 45); do
 done
 
 echo "Бот не запустился (состояние: ${STATE}). Последние строки журнала:" >&2
-docker compose logs --tail 40 "$C" >&2 || true
+LOGS="$(docker compose logs --tail 40 "$C" 2>&1 || true)"
+echo "$LOGS" >&2
+if echo "$LOGS" | grep -qiE 'TelegramNetworkError|api\.telegram\.org|Cannot connect to host|timed? ?out'; then
+  echo >&2
+  echo "[!] Похоже, сервер не может достучаться до Telegram. Укажите прокси в .env:" >&2
+  echo "    TELEGRAM_PROXY=socks5://login:pass@host:port" >&2
+fi
 exit 1

@@ -7,12 +7,13 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, TelegramObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from .config import Config, load_config
+from .config import Config, hide_password, load_config
 from .db import Database
 from .handlers import admin, user
 from .handlers.common import fmt_dt, location_name
@@ -67,6 +68,14 @@ async def expiry_reminders(bot: Bot, db: Database, cfg: Config) -> None:
         await asyncio.sleep(1800)
 
 
+def create_bot(cfg: Config) -> Bot:
+    session = AiohttpSession(proxy=cfg.telegram_proxy) if cfg.telegram_proxy else None
+    if cfg.telegram_proxy:
+        log.info("Telegram — через прокси %s", hide_password(cfg.telegram_proxy))
+    return Bot(cfg.bot_token, session=session,
+               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+
 def build_dispatcher(db: Database, shop: Shop, cfg: Config) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage(), db=db, shop=shop, cfg=cfg)
     dp.message.outer_middleware(UserMiddleware())
@@ -85,10 +94,12 @@ async def main() -> None:
 
     db = Database(cfg.db_path)
     await db.connect()
-    api = SteelProxyClient(cfg.api_key, cfg.api_base)
+    api = SteelProxyClient(cfg.api_key, cfg.api_base, proxy=cfg.steelproxy_proxy)
+    if cfg.steelproxy_proxy:
+        log.info("API Steel Proxy — через прокси %s", hide_password(cfg.steelproxy_proxy))
     shop = Shop(db, api, cfg.markup_percent)
 
-    bot = Bot(cfg.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = create_bot(cfg)
     dp = build_dispatcher(db, shop, cfg)
 
     await bot.set_my_commands([
