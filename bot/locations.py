@@ -43,26 +43,35 @@ def _iso(code: str | None) -> str | None:
     return code if _ISO.match(code) else None
 
 
+def _known(code: str | None) -> str | None:
+    """Код страны, только если это реально известная страна (не «DI», не «UI»)."""
+    iso = _iso(code)
+    return iso if iso in COUNTRIES_RU else None
+
+
 def parse(country_code: str | None, title: str | None) -> tuple[str | None, str]:
-    """→ (ISO-код или None, суффикс ноды вроде «ISP01» / «DC05» или '')."""
+    """→ (ISO-код или None, суффикс ноды вроде «ISP01» / «DC05» или '').
+
+    Главный источник — название ноды («DE_ISP01», «США_DC05», «Финляндия»):
+    в country_code Steel Proxy кладёт внутренние коды нод («di», «ui», «02kz»),
+    поэтому он используется только как запасной вариант.
+    """
     title = (title or "").strip()
     parts = [p for p in _SPLIT.split(title) if p]
     head = parts[0] if parts else ""
-    suffix = " ".join(parts[1:])
 
-    iso = _iso(country_code)
-    if iso is None and country_code:
-        # country_code вида «DE_ISP01» или «США»
-        cc_parts = [p for p in _SPLIT.split(country_code.strip()) if p]
-        if cc_parts:
-            iso = _iso(cc_parts[0]) or _BY_NAME.get(cc_parts[0].lower())
-    head_iso = _iso(head) or _BY_NAME.get(head.lower()) or _BY_NAME.get(title.lower())
-    if iso is None:
-        iso = head_iso
-    if head_iso is None:
-        # заголовок — не страна и не код страны: оставляем его целиком как уточнение
-        suffix = title if title.upper() != (iso or "") else ""
-    return iso, suffix
+    iso = _known(head) or _BY_NAME.get(head.lower())
+    if iso:
+        return iso, " ".join(parts[1:])
+    iso = _BY_NAME.get(title.lower())
+    if iso:
+        return iso, ""
+    # по названию не понять — пробуем country_code («RU», «de», «DE_ISP01», «США»)
+    if country_code:
+        cc = country_code.strip()
+        cc_head = ([p for p in _SPLIT.split(cc) if p] or [""])[0]
+        iso = _known(cc) or _known(cc_head) or _BY_NAME.get(cc_head.lower())
+    return iso, ("" if not title or (iso and title.upper() == iso) else title)
 
 
 def flag(iso: str | None) -> str:
@@ -73,12 +82,8 @@ def flag(iso: str | None) -> str:
 
 def display(country_code: str | None, title: str | None, with_suffix: bool = True) -> str:
     iso, suffix = parse(country_code, title)
-    if iso and iso in COUNTRIES_RU:
+    if iso:
         name = COUNTRIES_RU[iso]
-    elif iso and title and parse(None, title)[0] is None:
-        name, suffix = title, ""  # незнакомый код страны — показываем название как есть
-    elif iso:
-        name = iso
     else:
         name, suffix = (title or country_code or "—"), ""
     text = f"{flag(iso)} {name}"
