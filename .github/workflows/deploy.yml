@@ -1,0 +1,90 @@
+# Обновление бота кнопкой: Actions → «Деплой бота» → Run workflow.
+# Сначала тесты, затем SSH на сервер с ключом, который может только запустить
+# deploy/update.sh (см. deploy/connect-github.sh). update.sh сам проверяет,
+# что бот поднялся, и завершается с ошибкой, если нет.
+name: Деплой бота
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-bot
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest -v
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Проверка секретов
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          KEY: ${{ secrets.DEPLOY_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          missing=""
+          [ -n "$HOST" ] || missing="$missing DEPLOY_HOST"
+          [ -n "$KEY" ] || missing="$missing DEPLOY_KEY"
+          [ -n "$KNOWN" ] || missing="$missing DEPLOY_KNOWN_HOSTS"
+          if [ -n "$missing" ]; then
+            echo "::error::Не заданы секреты:$missing. Запустите на сервере deploy/connect-github.sh и добавьте выданные значения."
+            exit 1
+          fi
+
+      - name: SSH-ключ
+        env:
+          KEY: ${{ secrets.DEPLOY_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN" > ~/.ssh/known_hosts
+
+      - name: Обновление на сервере
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          USER: ${{ secrets.DEPLOY_USER || 'proxy-bot-deploy' }}
+        run: |
+          set +e
+          ssh -i ~/.ssh/deploy_key -p "$PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+            "$USER@$HOST" deploy 2> >(tee ssh-err.log >&2)
+          rc=$?
+          if [ $rc -eq 0 ]; then exit 0; fi
+          if [ $rc -ne 255 ]; then
+            echo "::error title=Обновление на сервере завершилось с ошибкой ($rc)::Подробности — в логе этого шага выше."
+            exit $rc
+          fi
+          # 255 — не удалось подключиться по SSH. Объясняем причину.
+          err="$(grep -v '^Warning' ssh-err.log | tail -3 | tr '\n' ' ')"
+          hint="Проверьте секреты DEPLOY_HOST / DEPLOY_PORT."
+          case "$err" in
+            *"Host key verification failed"*|*"REMOTE HOST IDENTIFICATION"*|*"No "*"host key is known"*)
+              got="$(ssh-keyscan -p "$PORT" -T 10 "$HOST" 2>/dev/null | head -3 | tr '\n' ' ')"
+              hint="Ключ сервера не совпал с DEPLOY_KNOWN_HOSTS. Сервер отвечает так: ${got:-не ответил}. Скопируйте секрет заново из вывода connect-github.sh целиком." ;;
+            *"Permission denied"*)
+              hint="Сервер не принял ключ: проверьте, что DEPLOY_KEY вставлен целиком (с BEGIN/END) и DEPLOY_USER=proxy-bot-deploy." ;;
+            *"Connection refused"*)
+              hint="На ${HOST}:${PORT} SSH не слушает — проверьте DEPLOY_PORT." ;;
+            *"timed out"*|*"No route"*)
+              hint="Сервер ${HOST}:${PORT} недоступен из GitHub — проверьте DEPLOY_HOST/DEPLOY_PORT и файрвол провайдера." ;;
+          esac
+          echo "::error title=Не удалось подключиться по SSH::${hint} Ответ ssh: ${err}"
+          exit 255
+
+      - name: Убрать ключ
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
