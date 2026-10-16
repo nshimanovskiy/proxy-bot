@@ -38,15 +38,16 @@
 на сервер и распакуйте:
 
 ```bash
-sudo mkdir -p /opt/proxy-bot
-sudo unzip ~/proxy-bot-main.zip -d /tmp/pb && sudo cp -r /tmp/pb/proxy-bot-main/. /opt/proxy-bot/
-cd /opt/proxy-bot
+sudo mkdir -p /opt/proxy-bot && cd /opt/proxy-bot
+sudo unzip ~/proxy-bot-main.zip            # распакуется в папку proxy-bot-main
+shopt -s dotglob && sudo mv proxy-bot-main/* . && sudo rmdir proxy-bot-main
+sudo chmod +x deploy/*.sh
 ```
 
 **2. Запустите установку:**
 
 ```bash
-sudo ./deploy/setup.sh
+sudo bash deploy/setup.sh
 ```
 
 Скрипт спросит токен бота, API-ключ Steel Proxy и ваш Telegram ID, проверит ключ в API,
