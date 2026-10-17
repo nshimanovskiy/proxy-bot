@@ -54,6 +54,7 @@ async def admin_help(message: Message):
 @router.message(Command("stats"))
 async def stats(message: Message, db: Database, shop: Shop):
     s = await db.stats()
+    xs = await db.xr_stats()
     await message.answer(
         "<b>Статистика</b>\n\n"
         f"Пользователей: {s['users']}\n"
@@ -63,6 +64,7 @@ async def stats(message: Message, db: Database, shop: Shop):
         f"Закупка: {fmt_rub(s['cost'])}\n"
         f"Прибыль: <b>{fmt_rub(s['revenue'] - s['cost'])}</b>\n\n"
         f"Сегодня (UTC): {s['today_orders']} заказ(ов) на {fmt_rub(s['today_revenue'])}\n"
+        f"Пополнений через xRocket: {xs['count']} на {fmt_rub(xs['rub'])}\n"
         f"Баланс Steel Proxy (после последней операции): "
         f"{esc(shop.last_api_balance or 'неизвестен')} ₽")
 

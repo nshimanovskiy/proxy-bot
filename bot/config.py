@@ -39,6 +39,16 @@ class Config:
     operator_inn: str = ""
     support_email: str = ""
     docs_date: str = ""
+    # Ручное пополнение по реквизитам с чеком (включено, если задан PAYMENT_INFO или нет xRocket)
+    manual_payments: bool = True
+    # xRocket Pay
+    xrocket_token: str = ""
+    xrocket_webhook_secret: str = ""
+    xrocket_webhook_url: str = ""
+    xrocket_webhook_port: int = 8090
+    xrocket_testnet: bool = False
+    xrocket_currencies: tuple[str, ...] = ("USDT",)
+    rub_per_usd: Decimal | None = None
 
 
 PROXY_SCHEMES = ("socks5://", "http://")
@@ -66,6 +76,13 @@ def hide_password(url: str) -> str:
 
 
 def load_config() -> Config:
+    from .xrocket import parse_currencies
+    xr_token = os.getenv("XROCKET_PAY_TOKEN", "").strip()
+    payment_info_set = bool(os.getenv("PAYMENT_INFO", "").strip())
+    rub_per_usd = os.getenv("RUB_PER_USD", "").strip().replace(",", ".")
+    webhook_url = os.getenv("XROCKET_WEBHOOK_URL", "").strip()
+    if webhook_url and not webhook_url.startswith("https://"):
+        raise RuntimeError("XROCKET_WEBHOOK_URL должен начинаться с https://")
     admins = frozenset(
         int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x
     )
@@ -90,4 +107,12 @@ def load_config() -> Config:
         operator_inn=os.getenv("OPERATOR_INN", "").strip(),
         support_email=os.getenv("SUPPORT_EMAIL", "").strip(),
         docs_date=os.getenv("DOCS_DATE", "").strip(),
+        manual_payments=payment_info_set or not xr_token,
+        xrocket_token=xr_token,
+        xrocket_webhook_secret=os.getenv("XROCKET_WEBHOOK_SECRET", "").strip(),
+        xrocket_webhook_url=webhook_url,
+        xrocket_webhook_port=int(os.getenv("XROCKET_WEBHOOK_PORT", "8090")),
+        xrocket_testnet=os.getenv("XROCKET_TESTNET", "0").strip() == "1",
+        xrocket_currencies=tuple(parse_currencies(os.getenv("XROCKET_CURRENCIES", "USDT,TONCOIN,TRX"))),
+        rub_per_usd=Decimal(rub_per_usd) if rub_per_usd else None,
     )

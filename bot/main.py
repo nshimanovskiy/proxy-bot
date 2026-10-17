@@ -89,8 +89,8 @@ def create_bot(cfg: Config) -> Bot:
                default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
 
-def build_dispatcher(db: Database, shop: Shop, cfg: Config) -> Dispatcher:
-    dp = Dispatcher(storage=MemoryStorage(), db=db, shop=shop, cfg=cfg)
+def build_dispatcher(db: Database, shop: Shop, cfg: Config, xr=None) -> Dispatcher:
+    dp = Dispatcher(storage=MemoryStorage(), db=db, shop=shop, cfg=cfg, xr=xr)
     dp.message.outer_middleware(UserMiddleware())
     dp.callback_query.outer_middleware(UserMiddleware())
     dp.include_router(admin.router)
@@ -118,6 +118,48 @@ async def refresh_prices_page(bot: Bot, db: Database, shop: Shop, cfg: Config) -
             log.exception("refresh_prices_page")
 
 
+def create_xrocket(db: Database, cfg: Config, bot: Bot):
+    """xRocket Pay, если задан XROCKET_PAY_TOKEN. Об оплате — сообщение покупателю и админам."""
+    if not cfg.xrocket_token:
+        return None
+    from .db import fmt_rub
+    from .handlers.common import notify_admins
+    from .xrocket import TITLES, XRocket
+
+    async def on_paid(p: dict) -> None:
+        cur = TITLES.get(p["currency"], p["currency"])
+        try:
+            await bot.send_message(p["user_id"], f"💰 Баланс пополнен на <b>{fmt_rub(p['rub'])}</b> "
+                                                 f"(оплачено {p['amount']} {cur} через xRocket).\n"
+                                                 f"Текущий баланс: <b>{fmt_rub(p['balance'])}</b>")
+        except Exception as exc:
+            log.info("on_paid → %s: %s", p["user_id"], exc)
+        u = await db.get_user(p["user_id"])
+        who = f"@{u['username']}" if u and u["username"] else str(p["user_id"])
+        await notify_admins(bot, cfg, f"💎 Пополнение через xRocket: {who} — {fmt_rub(p['rub'])} "
+                                      f"({p['amount']} {cur}). Деньги — на балансе приложения в @xRocket.")
+
+    return XRocket(db, cfg.xrocket_token, webhook_secret=cfg.xrocket_webhook_secret,
+                   webhook_url=cfg.xrocket_webhook_url, testnet=cfg.xrocket_testnet,
+                   currencies=list(cfg.xrocket_currencies), rub_per_usd=cfg.rub_per_usd,
+                   on_paid=on_paid)
+
+
+async def start_webhook_server(xr, cfg: Config):
+    """Приём вебхуков xRocket (если задан XROCKET_WEBHOOK_URL и секрет)."""
+    from urllib.parse import urlsplit
+
+    from aiohttp import web
+    if not (xr and xr.callback_url):
+        return None
+    path = urlsplit(cfg.xrocket_webhook_url).path or "/"
+    runner = web.AppRunner(xr.web_app(path))
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", cfg.xrocket_webhook_port).start()
+    log.info("Вебхук xRocket: порт %s, путь %s", cfg.xrocket_webhook_port, path)
+    return runner
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -137,18 +179,31 @@ async def main() -> None:
     shop = Shop(db, api, cfg.markup_percent)
 
     bot = create_bot(cfg)
-    dp = build_dispatcher(db, shop, cfg)
+    xr = create_xrocket(db, cfg, bot)
+    dp = build_dispatcher(db, shop, cfg, xr)
 
     await set_command_menus(bot, cfg)
 
     reminders = asyncio.create_task(expiry_reminders(bot, db, cfg))
     prices_task = asyncio.create_task(refresh_prices_page(bot, db, shop, cfg))
+    xr_task = asyncio.create_task(xr.reconcile_loop()) if xr else None
+    webhook = await start_webhook_server(xr, cfg)
+    if xr:
+        log.info("Оплата через xRocket Pay включена%s%s",
+                 " (тестовая сеть)" if xr.testnet else "",
+                 "" if xr.callback_url else " — без вебхука, сверка каждые 30 с")
     try:
         log.info("Бот запущен")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         reminders.cancel()
         prices_task.cancel()
+        if xr_task:
+            xr_task.cancel()
+        if webhook:
+            await webhook.cleanup()
+        if xr:
+            await xr.close()
         await api.close()
         await db.close()
         await bot.session.close()

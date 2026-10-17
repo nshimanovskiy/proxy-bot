@@ -69,6 +69,24 @@ CREATE TABLE IF NOT EXISTS ticket_links (
     PRIMARY KEY (chat_id, message_id)
 );
 
+-- Счета xRocket Pay. id — наш clientInvoiceId; rub — сколько копеек зачислить на баланс.
+-- Записи остаются навсегда: это бухгалтерия.
+CREATE TABLE IF NOT EXISTS xr_invoices (
+    id         TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    rub        INTEGER NOT NULL,
+    amount     TEXT NOT NULL,              -- сумма в крипте (строка, как в API xRocket)
+    currency   TEXT NOT NULL,
+    invoice_id TEXT,
+    url        TEXT,
+    status     TEXT NOT NULL DEFAULT 'pending', -- pending / paid / expired / cancelled / failed
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    checked_at REAL NOT NULL DEFAULT 0,
+    paid_at    REAL
+);
+CREATE INDEX IF NOT EXISTS idx_xr_status ON xr_invoices(status, checked_at);
+
 CREATE TABLE IF NOT EXISTS topups (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
@@ -229,6 +247,95 @@ class Database:
         if cur.rowcount != 1:
             return None
         return await self._one("SELECT * FROM topups WHERE id=?", topup_id)
+
+    # ---------- Счета xRocket Pay ----------
+    async def add_xr_invoice(self, inv_id: str, user_id: int, rub: int, amount: str,
+                             currency: str, expires_at: float) -> None:
+        import time
+        await self.conn.execute(
+            """INSERT INTO xr_invoices (id, user_id, rub, amount, currency, created_at, expires_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (inv_id, user_id, rub, amount, currency, time.time(), expires_at))
+        await self.conn.commit()
+
+    async def set_xr_invoice_link(self, inv_id: str, invoice_id: str, url: str,
+                                  expires_at: float) -> None:
+        await self.conn.execute(
+            "UPDATE xr_invoices SET invoice_id=?, url=?, expires_at=? WHERE id=?",
+            (invoice_id or None, url, expires_at, inv_id))
+        await self.conn.commit()
+
+    async def get_xr_invoice(self, inv_id: str) -> aiosqlite.Row | None:
+        return await self._one("SELECT * FROM xr_invoices WHERE id=?", inv_id)
+
+    async def open_xr_invoice(self, user_id: int, rub: int, currency: str,
+                              alive_until: float) -> aiosqlite.Row | None:
+        """Неоплаченный счёт на ту же сумму и валюту, которому жить ещё долго — отдадим его."""
+        return await self._one(
+            """SELECT * FROM xr_invoices WHERE user_id=? AND rub=? AND currency=?
+               AND status='pending' AND url IS NOT NULL AND expires_at > ?
+               ORDER BY created_at DESC LIMIT 1""", user_id, rub, currency, alive_until)
+
+    async def close_xr_invoice(self, inv_id: str, status: str) -> None:
+        await self.conn.execute(
+            "UPDATE xr_invoices SET status=? WHERE id=? AND status='pending'", (status, inv_id))
+        await self.conn.commit()
+
+    async def pending_xr_invoices(self, user_id: int | None = None,
+                                  limit: int = 8) -> list[aiosqlite.Row]:
+        """Неоплаченные счета — сначала те, что дольше всех не проверялись."""
+        import time
+        now = time.time()
+        if user_id is None:
+            rows = await self._all(
+                """SELECT * FROM xr_invoices WHERE status='pending' AND url IS NOT NULL
+                   ORDER BY checked_at ASC LIMIT ?""", limit)
+        else:
+            rows = await self._all(
+                """SELECT * FROM xr_invoices WHERE status='pending' AND url IS NOT NULL
+                   AND user_id=? ORDER BY created_at DESC LIMIT ?""", user_id, limit)
+        if rows:
+            await self.conn.executemany("UPDATE xr_invoices SET checked_at=? WHERE id=?",
+                                        [(now, r["id"]) for r in rows])
+            await self.conn.commit()
+        return rows
+
+    async def expire_xr_invoices(self, before: float) -> None:
+        """Подстраховка: давно истёкшие счета, которые не удалось сверить, закрываем."""
+        await self.conn.execute(
+            "UPDATE xr_invoices SET status='expired' WHERE status='pending' AND expires_at < ?",
+            (before,))
+        await self.conn.commit()
+
+    async def credit_xr_invoice(self, inv_id: str) -> dict | None:
+        """Отмечает счёт оплаченным и зачисляет рубли — одной транзакцией и ровно один раз."""
+        import time
+        try:
+            cur = await self.conn.execute(
+                "UPDATE xr_invoices SET status='paid', paid_at=? WHERE id=? AND status != 'paid'",
+                (time.time(), inv_id))
+            if cur.rowcount != 1:
+                await self.conn.rollback()
+                return None
+            row = await self._one("SELECT * FROM xr_invoices WHERE id=?", inv_id)
+            await self.conn.execute("UPDATE users SET balance = balance + ? WHERE id=?",
+                                    (row["rub"], row["user_id"]))
+            await self.conn.execute(
+                "INSERT INTO transactions (user_id, amount, kind, ref, created_at) VALUES (?,?,?,?,?)",
+                (row["user_id"], row["rub"], "topup", f"xrocket:{inv_id}", now_iso()))
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+        bal = await self._one("SELECT balance FROM users WHERE id=?", row["user_id"])
+        return {"id": inv_id, "user_id": row["user_id"], "rub": row["rub"],
+                "amount": row["amount"], "currency": row["currency"],
+                "balance": int(bal["balance"]) if bal else 0}
+
+    async def xr_stats(self) -> dict[str, int]:
+        row = await self._one(
+            "SELECT COUNT(*) c, COALESCE(SUM(rub),0) s FROM xr_invoices WHERE status='paid'")
+        return {"count": row["c"], "rub": row["s"]}
 
     # ---------- Настройки ----------
     async def get_setting(self, key: str) -> str | None:
