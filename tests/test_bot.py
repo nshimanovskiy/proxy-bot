@@ -132,6 +132,7 @@ class BotScenarioTest(unittest.IsolatedAsyncioTestCase):
         text = self.texts(calls)
         self.assertIn("Заказ №1000 оплачен", text)
         self.assertIn("u1:p@dc01.example:3071", text)
+        self.assertIn("HTTPS: <code>u1:p@dc01.example:3071</code>", text)
         admin_msgs = [c.text for c in calls if isinstance(c, SendMessage) and c.chat_id == ADMIN]
         self.assertTrue(any("Продажа №1000" in t and "прибыль 29 ₽" in t for t in admin_msgs),
                         admin_msgs)
@@ -185,6 +186,12 @@ class BotScenarioTest(unittest.IsolatedAsyncioTestCase):
         await self.send(ADMIN, f"/ban {BUYER}")
         calls = await self.send(BUYER, "/start")
         self.assertEqual(calls, [])
+
+        calls = await self.send(20, "/help")   # покупатель BUYER к этому моменту забанен
+        self.assertIn("/orders", self.texts(calls))
+        self.assertNotIn("/give", self.texts(calls))
+        calls = await self.send(ADMIN, "/help")
+        self.assertIn("/give", self.texts(calls))
 
         calls = await self.send(ADMIN, "/stats")
         self.assertIn("Заказов всего: 2", self.texts(calls))

@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, TelegramObject
+from aiogram.types import TelegramObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .config import Config, hide_password, load_config
@@ -66,6 +66,19 @@ async def expiry_reminders(bot: Bot, db: Database, cfg: Config) -> None:
         except Exception:
             log.exception("expiry_reminders")
         await asyncio.sleep(1800)
+
+
+async def set_command_menus(bot: Bot, cfg: Config) -> None:
+    """Покупатели видят в меню свои команды, админы — свои и админские."""
+    from aiogram.types import BotCommandScopeChat, BotCommandScopeDefault
+    from .commands import ADMIN_COMMANDS, USER_COMMANDS, menu
+    await bot.set_my_commands(menu(USER_COMMANDS), scope=BotCommandScopeDefault())
+    for admin_id in cfg.admin_ids:
+        try:
+            await bot.set_my_commands(menu(USER_COMMANDS + ADMIN_COMMANDS),
+                                      scope=BotCommandScopeChat(chat_id=admin_id))
+        except Exception as exc:  # админ ещё не запускал бота
+            log.warning("Меню команд для админа %s: %s", admin_id, exc)
 
 
 def create_bot(cfg: Config) -> Bot:
@@ -126,16 +139,7 @@ async def main() -> None:
     bot = create_bot(cfg)
     dp = build_dispatcher(db, shop, cfg)
 
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Главное меню"),
-        BotCommand(command="buy", description="Купить прокси"),
-        BotCommand(command="orders", description="Мои заказы"),
-        BotCommand(command="balance", description="Баланс и пополнение"),
-        BotCommand(command="prices", description="Цены и тарифы"),
-        BotCommand(command="support", description="Поддержка"),
-        BotCommand(command="terms", description="Пользовательское соглашение"),
-        BotCommand(command="privacy", description="Политика конфиденциальности"),
-    ])
+    await set_command_menus(bot, cfg)
 
     reminders = asyncio.create_task(expiry_reminders(bot, db, cfg))
     prices_task = asyncio.create_task(refresh_prices_page(bot, db, shop, cfg))

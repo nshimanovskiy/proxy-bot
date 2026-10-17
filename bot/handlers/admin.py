@@ -42,28 +42,13 @@ def topup_decision_kb(topup_id: int):
     return kb.as_markup()
 
 
-HELP = """<b>Админ-панель</b>
 
-/stats — статистика продаж
-/user &lt;id|@username&gt; — карточка пользователя
-/give &lt;id|@username&gt; &lt;сумма&gt; — начислить на баланс
-/take &lt;id|@username&gt; &lt;сумма&gt; — списать с баланса
-/ban, /unban &lt;id|@username&gt; — заблокировать / разблокировать
-/check &lt;№ локального заказа&gt; — сверить заказ после сбоя сети
-/sporders — последние заказы в Steel Proxy
-/reload — сбросить кэш каталога и цен
-/broadcast — ответьте этой командой на сообщение, чтобы разослать его всем
-
-<b>Поддержка и документы</b>
-Ответ на обращение — реплай на сообщение с обращением.
-/tickets — открытые обращения
-/publish — опубликовать соглашение, политику и цены на telegra.ph (ссылки для банка)
-/deluser &lt;id|@username&gt; — удалить персональные данные пользователя по его запросу"""
 
 
 @router.message(Command("admin"))
 async def admin_help(message: Message):
-    await message.answer(HELP)
+    from ..commands import admin_text
+    await message.answer(admin_text())
 
 
 @router.message(Command("stats"))

@@ -60,6 +60,7 @@ def proxies_text(proxies: list[dict]) -> str:
             f"<b>#{i}</b>  {esc(p.get('host'))}\n"
             f"Логин: <code>{esc(p.get('username'))}</code>  Пароль: <code>{esc(p.get('password'))}</code>\n"
             f"HTTP: <code>{esc(p.get('connection_string_http'))}</code>\n"
+            f"HTTPS: <code>{esc(p.get('connection_string_http'))}</code>\n"
             f"SOCKS5: <code>{esc(p.get('connection_string_socks5'))}</code>"
         )
     return "\n\n".join(lines)
@@ -69,6 +70,9 @@ def proxies_file(order: dict) -> BufferedInputFile:
     buf = io.StringIO()
     proxies = order.get("proxies") or []
     buf.write("# HTTP (login:pass@host:port)\n")
+    for p in proxies:
+        buf.write(f"{p.get('connection_string_http')}\n")
+    buf.write("\n# HTTPS — тот же порт, что и HTTP (login:pass@host:port)\n")
     for p in proxies:
         buf.write(f"{p.get('connection_string_http')}\n")
     buf.write("\n# SOCKS5 (login:pass@host:port)\n")

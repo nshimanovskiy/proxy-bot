@@ -71,11 +71,17 @@ async def cmd_start(message: Message, db: Database, cfg: Config, state: FSMConte
         f"👋 Добро пожаловать в <b>{esc(cfg.shop_name)}</b>!\n\n"
         "Здесь можно купить серверные и резидентские прокси — выдача мгновенная, "
         "сразу после оплаты. Пополните баланс и выберите локацию.\n\n"
-        "Цены — /prices, поддержка — /support.\n"
+        "Цены — /prices, поддержка — /support, все команды — /help.\n"
         "Пользуясь ботом, вы принимаете Пользовательское соглашение (/terms) "
         "и Политику конфиденциальности (/privacy).",
         reply_markup=MAIN_KB,
     )
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message, cfg: Config):
+    from ..commands import help_text
+    await message.answer(help_text(message.from_user.id in cfg.admin_ids))
 
 
 @router.message(Command("cancel"))
