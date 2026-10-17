@@ -291,6 +291,39 @@ class BotTopupTest(unittest.IsolatedAsyncioTestCase):
                 return d
         self.fail(f"нет кнопки «{part}»: {list(self.buttons(calls))}")
 
+    async def test_service_is_chosen_first(self):
+        import dataclasses
+        for r in list(self.dp.sub_routers):
+            r._parent_router = None
+        self.cfg = dataclasses.replace(self.cfg, manual_payments=True,
+                                       payment_info="Карта 1111", xrocket_currencies=("USDT",))
+        self.xr.currencies = ["USDT"]
+        self.dp = build_dispatcher(self.db, Shop(self.db, FakeAPI(), Decimal(30)), self.cfg, self.xr)
+
+        await self.send("/start")
+        calls = await self.press(self.find(await self.send(BTN_BALANCE), "Пополнить"))
+        btns = self.buttons(calls)
+        self.assertEqual(list(btns), ["💎 Криптовалютой (xRocket)", "🏦 Переводом по реквизитам"])
+        self.assertFalse(any("₽" in b for b in btns))         # сумма — только после выбора
+
+        # реквизиты → сумма → чек
+        calls = await self.press(btns["🏦 Переводом по реквизитам"])
+        self.assertIn("На какую сумму", "\n".join(c.text for c in calls if isinstance(c, SendMessage)))
+        calls = await self.press(self.find(calls, "500 ₽"))
+        text = "\n".join(c.text for c in calls if isinstance(c, SendMessage))
+        self.assertIn("Карта 1111", text)
+        self.assertIn("чека", text)
+        self.assertEqual(self.fake.created, [])
+
+        # крипта → сумма текстом → одна валюта, счёт сразу
+        await self.send("/cancel")
+        calls = await self.press(self.find(await self.send(BTN_BALANCE), "Пополнить"))
+        calls = await self.press(self.find(calls, "Криптовалютой"))
+        calls = await self.send("700")
+        self.assertEqual(len(self.fake.created), 1)
+        self.assertEqual(self.fake.created[0]["priceCurrency"], "USDT")
+        self.assertTrue(self.find(calls, "Оплатить").startswith("https://t.me/xrocket"))
+
     async def test_topup_with_crypto(self):
         await self.send("/start")
         calls = await self.send(BTN_BALANCE)

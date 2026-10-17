@@ -44,9 +44,9 @@ class OrderCB(CallbackData, prefix="o"):
 
 
 class TopupCB(CallbackData, prefix="tu"):
-    act: str             # start / amount / manual / xr / xrcheck
+    act: str             # start / svc / amount / xr / xrcheck
     a: int = 0           # сумма, ₽
-    c: str = ""          # валюта xRocket
+    c: str = ""          # способ (xrocket / manual) или валюта xRocket
 
 
 class BuyStates(StatesGroup):
@@ -486,41 +486,80 @@ async def balance(message: Message, db: Database):
                          reply_markup=kb.as_markup())
 
 
-@router.callback_query(TopupCB.filter(F.act == "start"))
-async def topup_start(call: CallbackQuery, callback_data: TopupCB, cfg: Config, state: FSMContext):
-    await state.set_state(TopupStates.amount)
-    suggested = max(cfg.min_topup_rub, callback_data.a)
-    kb = InlineKeyboardBuilder()
-    for a in sorted({suggested, 300, 500, 1000, 3000}):
-        if a >= cfg.min_topup_rub:
-            kb.button(text=f"{a} ₽", callback_data=TopupCB(act="amount", a=a))
-    kb.adjust(3)
-    await call.message.answer(
-        f"На какую сумму пополнить? Выберите или введите число (от {cfg.min_topup_rub} ₽).\n"
-        "/cancel — отмена.", reply_markup=kb.as_markup())
-    await call.answer()
-
-
 TERMS_NOTE = ("<i>Оплачивая, вы принимаете Пользовательское соглашение (/terms); "
               "условия возврата — в его разделе 4.</i>")
 
+SERVICES = {"xrocket": "💎 Криптовалютой (xRocket)", "manual": "🏦 Переводом по реквизитам"}
 
-async def _topup_amount_chosen(target: Message, amount: int, cfg: Config, state: FSMContext,
-                               xr=None):
-    if xr is None:
-        await _manual_topup(target, amount, cfg, state)
-        return
-    # Есть xRocket — предлагаем выбрать способ
+
+def topup_services(cfg: Config, xr) -> list[str]:
+    """Доступные способы пополнения в том порядке, в каком их показываем."""
+    out = []
+    if xr is not None:
+        out.append("xrocket")
+    if cfg.manual_payments or not out:
+        out.append("manual")
+    return out
+
+
+@router.callback_query(TopupCB.filter(F.act == "start"))
+async def topup_start(call: CallbackQuery, callback_data: TopupCB, cfg: Config, state: FSMContext,
+                      xr=None):
+    await call.answer()
     await state.clear()
+    suggested = max(cfg.min_topup_rub, callback_data.a)
+    services = topup_services(cfg, xr)
+    if len(services) == 1:   # выбирать не из чего — сразу к сумме
+        await _ask_amount(call.message, services[0], suggested, cfg, state)
+        return
     kb = InlineKeyboardBuilder()
-    for cur in xr.currencies:
-        kb.button(text=f"💎 {xrocket_title(cur)}", callback_data=TopupCB(act="xr", a=amount, c=cur))
+    for svc in services:
+        kb.button(text=SERVICES[svc], callback_data=TopupCB(act="svc", a=suggested, c=svc))
+    kb.adjust(1)
+    await call.message.answer("Выберите способ пополнения:", reply_markup=kb.as_markup())
+
+
+@router.callback_query(TopupCB.filter(F.act == "svc"))
+async def topup_service(call: CallbackQuery, callback_data: TopupCB, cfg: Config,
+                        state: FSMContext, xr=None):
+    await call.answer()
+    if callback_data.c not in topup_services(cfg, xr):
+        await call.message.answer("Этот способ сейчас недоступен.")
+        return
+    await _ask_amount(call.message, callback_data.c, max(cfg.min_topup_rub, callback_data.a),
+                      cfg, state)
+
+
+async def _ask_amount(target: Message, svc: str, suggested: int, cfg: Config, state: FSMContext):
+    await state.set_state(TopupStates.amount)
+    await state.update_data(svc=svc)
+    kb = InlineKeyboardBuilder()
+    for a in sorted({suggested, 300, 500, 1000, 3000}):
+        if a >= cfg.min_topup_rub:
+            kb.button(text=f"{a} ₽", callback_data=TopupCB(act="amount", a=a, c=svc))
     kb.adjust(3)
-    if cfg.manual_payments:
-        kb.row(btn("🏦 Переводом по реквизитам", TopupCB(act="manual", a=amount)))
-    await target.answer(f"Сумма: <b>{amount} ₽</b>\n\nВыберите, чем оплатить. Криптовалютой — "
-                        "через @xRocket, деньги зачислятся автоматически.",
-                        reply_markup=kb.as_markup())
+    await target.answer(
+        f"{SERVICES[svc]}\n\nНа какую сумму пополнить? Выберите или введите число "
+        f"(от {cfg.min_topup_rub} ₽).\n/cancel — отмена.", reply_markup=kb.as_markup())
+
+
+async def _topup_amount_chosen(target: Message, user_id: int, amount: int, svc: str, cfg: Config,
+                               state: FSMContext, shop: Shop, xr=None):
+    await state.clear()
+    if svc == "xrocket" and xr is not None:
+        if len(xr.currencies) == 1:   # одна валюта — сразу выставляем счёт
+            await _send_xrocket_invoice(target, user_id, amount, xr.currencies[0], cfg, shop, xr)
+            return
+        kb = InlineKeyboardBuilder()
+        for cur in xr.currencies:
+            kb.button(text=f"💎 {xrocket_title(cur)}",
+                      callback_data=TopupCB(act="xr", a=amount, c=cur))
+        kb.adjust(3)
+        await target.answer(f"Сумма: <b>{amount} ₽</b>\n\nВыберите криптовалюту. Оплата — "
+                            "через @xRocket, деньги зачислятся автоматически.",
+                            reply_markup=kb.as_markup())
+        return
+    await _manual_topup(target, amount, cfg, state)
 
 
 async def _manual_topup(target: Message, amount: int, cfg: Config, state: FSMContext):
@@ -537,42 +576,38 @@ def xrocket_title(cur: str) -> str:
     return TITLES.get(cur, cur)
 
 
-@router.callback_query(TopupCB.filter(F.act == "manual"))
-async def topup_manual(call: CallbackQuery, callback_data: TopupCB, cfg: Config,
-                       state: FSMContext):
-    await call.answer()
-    if cfg.manual_payments:
-        await _manual_topup(call.message, callback_data.a, cfg, state)
-
-
 @router.callback_query(TopupCB.filter(F.act == "xr"))
 async def topup_xrocket(call: CallbackQuery, callback_data: TopupCB, cfg: Config, shop: Shop,
                         xr=None):
+    await call.answer()
+    await _send_xrocket_invoice(call.message, call.from_user.id, callback_data.a,
+                                callback_data.c, cfg, shop, xr)
+
+
+async def _send_xrocket_invoice(target: Message, user_id: int, amount: int, currency: str,
+                                cfg: Config, shop: Shop, xr) -> None:
     from ..xrocket import XRocketError
     if xr is None:
-        await call.answer("Оплата криптовалютой сейчас недоступна.", show_alert=True)
+        await target.answer("Оплата криптовалютой сейчас недоступна.")
         return
-    amount = callback_data.a
     if not cfg.min_topup_rub <= amount <= 1_000_000:
-        await call.answer("Неверная сумма.", show_alert=True)
+        await target.answer("Неверная сумма.")
         return
-    lock = shop.user_lock(call.from_user.id)
+    lock = shop.user_lock(user_id)
     if lock.locked():
-        await call.answer("Счёт уже выставляется…")
         return
     async with lock:
-        await call.answer()
         try:
-            inv = await xr.create_invoice(call.from_user.id, amount * 100, callback_data.c)
+            inv = await xr.create_invoice(user_id, amount * 100, currency)
         except XRocketError as exc:
-            await call.message.answer(f"❌ Не удалось выставить счёт. {esc(exc.customer_message)}")
+            await target.answer(f"❌ Не удалось выставить счёт. {esc(exc.customer_message)}")
             return
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text=f"💳 Оплатить {inv.amount} {xrocket_title(inv.currency)}",
                                 url=inv.url))
     kb.row(btn("🔄 Проверить оплату", TopupCB(act="xrcheck")))
     minutes = max(1, int((inv.expires_at - time.time()) // 60))
-    await call.message.answer(
+    await target.answer(
         f"Счёт на <b>{amount} ₽</b> = <b>{esc(inv.amount)} {esc(xrocket_title(inv.currency))}</b> "
         f"по курсу xRocket.\nДействует {minutes} мин.\n\n"
         "Нажмите «Оплатить» — откроется @xRocket. После оплаты деньги зачислятся на баланс "
@@ -593,20 +628,28 @@ async def topup_xrocket_check(call: CallbackQuery, xr=None):
                           show_alert=True)
 
 
-@router.callback_query(TopupStates.amount, TopupCB.filter(F.act == "amount"))
+@router.callback_query(TopupCB.filter(F.act == "amount"))
 async def topup_amount_btn(call: CallbackQuery, callback_data: TopupCB, cfg: Config,
-                           state: FSMContext, xr=None):
+                           state: FSMContext, shop: Shop, xr=None):
     await call.answer()
-    await _topup_amount_chosen(call.message, callback_data.a, cfg, state, xr)
+    svc = callback_data.c or "manual"
+    if svc not in topup_services(cfg, xr):
+        await call.message.answer("Этот способ сейчас недоступен.")
+        return
+    await _topup_amount_chosen(call.message, call.from_user.id, callback_data.a, svc, cfg,
+                               state, shop, xr)
 
 
 @router.message(TopupStates.amount)
-async def topup_amount_text(message: Message, cfg: Config, state: FSMContext, xr=None):
+async def topup_amount_text(message: Message, cfg: Config, state: FSMContext, shop: Shop,
+                            xr=None):
     text = (message.text or "").replace(" ", "").replace("₽", "")
     if not text.isdigit() or int(text) < cfg.min_topup_rub or int(text) > 1_000_000:
         await message.answer(f"Введите целое число рублей от {cfg.min_topup_rub}.")
         return
-    await _topup_amount_chosen(message, int(text), cfg, state, xr)
+    svc = (await state.get_data()).get("svc") or topup_services(cfg, xr)[0]
+    await _topup_amount_chosen(message, message.from_user.id, int(text), svc, cfg, state,
+                               shop, xr)
 
 
 @router.message(TopupStates.receipt, F.photo | F.document)
