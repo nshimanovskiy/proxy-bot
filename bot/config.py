@@ -34,6 +34,11 @@ class Config:
     tz: ZoneInfo
     telegram_proxy: str | None = None
     steelproxy_proxy: str | None = None
+    # Для документов (соглашение, политика): кто продавец и как с ним связаться
+    operator_name: str = ""
+    operator_inn: str = ""
+    support_email: str = ""
+    docs_date: str = ""
 
 
 PROXY_SCHEMES = ("socks5://", "http://")
@@ -81,4 +86,8 @@ def load_config() -> Config:
         tz=ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow")),
         telegram_proxy=_proxy("TELEGRAM_PROXY"),
         steelproxy_proxy=_proxy("STEELPROXY_PROXY"),
+        operator_name=os.getenv("OPERATOR_NAME", "").strip(),
+        operator_inn=os.getenv("OPERATOR_INN", "").strip(),
+        support_email=os.getenv("SUPPORT_EMAIL", "").strip(),
+        docs_date=os.getenv("DOCS_DATE", "").strip(),
     )

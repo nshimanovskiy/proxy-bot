@@ -16,7 +16,7 @@ from ..config import Config
 from ..db import Database, fmt_rub, to_kop
 from ..shop import Shop, ShopError
 from ..steelproxy import EXTEND_MONTHS, SteelProxyError, SteelProxyUnknownResult
-from .common import (BTN_BALANCE, BTN_BUY, BTN_ORDERS, BTN_SUPPORT, MAIN_KB,
+from .common import (BTN_BALANCE, BTN_BUY, BTN_ORDERS, MAIN_KB,
                      PROXY_TYPE_TITLES, esc, fmt_dt, location_name, notify_admins,
                      send_proxies, term_name)
 
@@ -70,7 +70,10 @@ async def cmd_start(message: Message, db: Database, cfg: Config, state: FSMConte
     await message.answer(
         f"👋 Добро пожаловать в <b>{esc(cfg.shop_name)}</b>!\n\n"
         "Здесь можно купить серверные и резидентские прокси — выдача мгновенная, "
-        "сразу после оплаты. Пополните баланс и выберите локацию.",
+        "сразу после оплаты. Пополните баланс и выберите локацию.\n\n"
+        "Цены — /prices, поддержка — /support.\n"
+        "Пользуясь ботом, вы принимаете Пользовательское соглашение (/terms) "
+        "и Политику конфиденциальности (/privacy).",
         reply_markup=MAIN_KB,
     )
 
@@ -79,13 +82,6 @@ async def cmd_start(message: Message, db: Database, cfg: Config, state: FSMConte
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Отменено.", reply_markup=MAIN_KB)
-
-
-@router.message(F.text == BTN_SUPPORT)
-@router.message(Command("support"))
-async def support(message: Message, cfg: Config):
-    await message.answer(f"По всем вопросам пишите: {esc(cfg.support_contact)}\n"
-                         "Укажите номер заказа, если вопрос по нему.")
 
 
 # ============================ покупка ============================
@@ -503,7 +499,9 @@ async def _topup_amount_chosen(target: Message, amount: int, cfg: Config, state:
     await target.answer(
         f"Сумма: <b>{amount} ₽</b>\n\n{esc(cfg.payment_info)}\n\n"
         "После оплаты пришлите сюда <b>скриншот или PDF чека</b> — администратор "
-        "проверит и зачислит деньги. /cancel — отмена.")
+        "проверит и зачислит деньги. /cancel — отмена.\n\n"
+        "<i>Оплачивая, вы принимаете Пользовательское соглашение (/terms); "
+        "условия возврата — в его разделе 4.</i>")
 
 
 @router.callback_query(TopupStates.amount, TopupCB.filter(F.act == "amount"))

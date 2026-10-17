@@ -58,6 +58,11 @@ class PurchaseResult:
     pending_check: bool = False # сеть оборвалась — заказ на ручной проверке
 
 
+def order_ref(local_id: int) -> str:
+    """Метка заказа для Steel Proxy (buyer_reference). Без Telegram ID — только номер заказа."""
+    return f"o{local_id}"
+
+
 class ShopError(Exception):
     """Ошибка, текст которой можно показать покупателю. status — код API, если был."""
 
@@ -151,7 +156,7 @@ class Shop:
             user_id=user_id, proxy_type=loc.proxy_type, node_id=loc.node_id,
             country_code=loc.country_code, location_title=loc.title,
             term_days=term_days, quantity=quantity, price=total)
-        ref = f"tg{user_id}-o{local_id}"
+        ref = order_ref(local_id)
 
         # 1) Резервируем деньги покупателя.
         try:
@@ -202,8 +207,10 @@ class Shop:
         o = await self.db.get_order(local_id)
         if not o or o["status"] != "unknown":
             return "nothing"
-        ref = f"tg{o['user_id']}-o{local_id}"
+        ref = order_ref(local_id)
         order = await self.api.find_order_by_reference(ref)
+        if order is None:  # заказы, оформленные до смены формата метки
+            order = await self.api.find_order_by_reference(f"tg{o['user_id']}-o{local_id}")
         if order:
             await self._save_order(local_id, order)
             return "active"

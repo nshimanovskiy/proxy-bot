@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram.client.session.base import BaseSession
 from aiogram.methods import (AnswerCallbackQuery, CopyMessage, DeleteMessage,
-                             EditMessageReplyMarkup, EditMessageText, SendDocument,
+                             EditMessageReplyMarkup, EditMessageText, GetMe, SendDocument,
                              SendMessage, SetMyCommands, TelegramMethod)
 from aiogram.types import Chat, Message, MessageId, User
 
@@ -17,8 +17,8 @@ from bot.steelproxy import SteelProxyError, SteelProxyUnknownResult
 BOT_ID = 777
 
 
-def make_config(admin_id: int = 1) -> Config:
-    return Config(
+def make_config(admin_id: int = 1, **extra) -> Config:
+    return Config(**extra,
         bot_token=f"{BOT_ID}:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", api_key="sp_test",
         api_base="https://example.invalid/v1", admin_ids=frozenset({admin_id}),
         markup_percent=Decimal(30), db_path=":memory:", shop_name="Test Shop",
@@ -121,6 +121,8 @@ class FakeSession(BaseSession):
         if isinstance(method, CopyMessage):
             self._mid += 1
             return MessageId(message_id=self._mid)
+        if isinstance(method, GetMe):
+            return User(id=BOT_ID, is_bot=True, first_name="shop", username="test_shop_bot")
         if isinstance(method, (AnswerCallbackQuery, DeleteMessage, SetMyCommands)):
             return True
         raise AssertionError(f"Неожиданный вызов Bot API: {type(method).__name__}")

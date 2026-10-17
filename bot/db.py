@@ -48,6 +48,27 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- какие сообщения у админов относятся к какому обращению (чтобы отвечать реплаем)
+CREATE TABLE IF NOT EXISTS ticket_links (
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    ticket_id  INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
+
 CREATE TABLE IF NOT EXISTS topups (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL,
@@ -208,6 +229,60 @@ class Database:
         if cur.rowcount != 1:
             return None
         return await self._one("SELECT * FROM topups WHERE id=?", topup_id)
+
+    # ---------- Настройки ----------
+    async def get_setting(self, key: str) -> str | None:
+        row = await self._one("SELECT value FROM settings WHERE key=?", key)
+        return row["value"] if row else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        await self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+        await self.conn.commit()
+
+    # ---------- Обращения в поддержку ----------
+    async def create_ticket(self, user_id: int) -> int:
+        now = now_iso()
+        cur = await self.conn.execute(
+            "INSERT INTO tickets (user_id, created_at, updated_at) VALUES (?,?,?)",
+            (user_id, now, now))
+        await self.conn.commit()
+        return int(cur.lastrowid)
+
+    async def get_ticket(self, ticket_id: int) -> aiosqlite.Row | None:
+        return await self._one("SELECT * FROM tickets WHERE id=?", ticket_id)
+
+    async def touch_ticket(self, ticket_id: int, status: str = "open") -> None:
+        await self.conn.execute("UPDATE tickets SET status=?, updated_at=? WHERE id=?",
+                                (status, now_iso(), ticket_id))
+        await self.conn.commit()
+
+    async def link_ticket_message(self, chat_id: int, message_id: int, ticket_id: int) -> None:
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO ticket_links (chat_id, message_id, ticket_id) VALUES (?,?,?)",
+            (chat_id, message_id, ticket_id))
+        await self.conn.commit()
+
+    async def ticket_by_message(self, chat_id: int, message_id: int) -> aiosqlite.Row | None:
+        return await self._one(
+            """SELECT t.* FROM ticket_links l JOIN tickets t ON t.id = l.ticket_id
+               WHERE l.chat_id=? AND l.message_id=?""", chat_id, message_id)
+
+    async def open_tickets(self, limit: int = 20) -> list[aiosqlite.Row]:
+        return await self._all(
+            "SELECT * FROM tickets WHERE status='open' ORDER BY updated_at DESC LIMIT ?", limit)
+
+    # ---------- Удаление персональных данных по запросу ----------
+    async def forget_user(self, user_id: int) -> None:
+        """Удаляет имя, @username и обращения. Заказы и платежи остаются (без имени) для учёта."""
+        await self.conn.execute("UPDATE users SET username=NULL, first_name=NULL WHERE id=?",
+                                (user_id,))
+        await self.conn.execute(
+            "DELETE FROM ticket_links WHERE ticket_id IN (SELECT id FROM tickets WHERE user_id=?)",
+            (user_id,))
+        await self.conn.execute("DELETE FROM tickets WHERE user_id=?", (user_id,))
+        await self.conn.commit()
 
     # ---------- Статистика ----------
     async def stats(self) -> dict[str, int]:

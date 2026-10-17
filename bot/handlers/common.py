@@ -18,11 +18,14 @@ BTN_BUY = "🛒 Купить прокси"
 BTN_ORDERS = "📦 Мои заказы"
 BTN_BALANCE = "💰 Баланс"
 BTN_SUPPORT = "🆘 Поддержка"
+BTN_PRICES = "💲 Цены"
+BTN_DOCS = "📄 Документы"
 
 MAIN_KB = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=BTN_BUY)],
               [KeyboardButton(text=BTN_ORDERS), KeyboardButton(text=BTN_BALANCE)],
-              [KeyboardButton(text=BTN_SUPPORT)]],
+              [KeyboardButton(text=BTN_PRICES), KeyboardButton(text=BTN_SUPPORT)],
+              [KeyboardButton(text=BTN_DOCS)]],
     resize_keyboard=True,
 )
 

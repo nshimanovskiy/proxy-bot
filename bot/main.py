@@ -15,7 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .config import Config, hide_password, load_config
 from .db import Database
-from .handlers import admin, user
+from .handlers import admin, info, user
 from .handlers.common import fmt_dt, location_name
 from .shop import Shop
 from .steelproxy import SteelProxyClient
@@ -81,14 +81,38 @@ def build_dispatcher(db: Database, shop: Shop, cfg: Config) -> Dispatcher:
     dp.message.outer_middleware(UserMiddleware())
     dp.callback_query.outer_middleware(UserMiddleware())
     dp.include_router(admin.router)
+    dp.include_router(info.router)
     dp.include_router(user.router)
     return dp
+
+
+async def refresh_prices_page(bot: Bot, db: Database, shop: Shop, cfg: Config) -> None:
+    """Раз в 6 часов обновляет опубликованную страницу цен на telegra.ph (если /publish делали)."""
+    from . import docs, telegraph
+    while True:
+        await asyncio.sleep(6 * 3600)
+        try:
+            if not await db.get_setting("telegraph_path_prices"):
+                continue
+            title, blocks = await info.build_doc("prices", bot, cfg, shop)
+            ctx = await info.doc_context(bot, cfg)
+            await telegraph.publish(db, telegraph.Telegraph(proxy=cfg.telegram_proxy),
+                                    {"prices": (title, docs.to_telegraph(blocks))},
+                                    author=cfg.shop_name,
+                                    author_url=f"https://t.me/{ctx.bot_username}")
+            log.info("Страница цен на telegra.ph обновлена")
+        except Exception:
+            log.exception("refresh_prices_page")
 
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config()
+    from .docs import DocContext
+    missing = DocContext.from_config(cfg, "bot").missing()
+    if missing:
+        log.warning("Для документов (банк) не заполнено в .env: %s", "; ".join(missing))
     if not cfg.admin_ids:
         log.warning("ADMIN_IDS не задан — заявки на пополнение некому будет подтверждать!")
 
@@ -107,15 +131,20 @@ async def main() -> None:
         BotCommand(command="buy", description="Купить прокси"),
         BotCommand(command="orders", description="Мои заказы"),
         BotCommand(command="balance", description="Баланс и пополнение"),
+        BotCommand(command="prices", description="Цены и тарифы"),
         BotCommand(command="support", description="Поддержка"),
+        BotCommand(command="terms", description="Пользовательское соглашение"),
+        BotCommand(command="privacy", description="Политика конфиденциальности"),
     ])
 
     reminders = asyncio.create_task(expiry_reminders(bot, db, cfg))
+    prices_task = asyncio.create_task(refresh_prices_page(bot, db, shop, cfg))
     try:
         log.info("Бот запущен")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         reminders.cancel()
+        prices_task.cancel()
         await api.close()
         await db.close()
         await bot.session.close()

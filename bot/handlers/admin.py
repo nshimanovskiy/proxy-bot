@@ -52,7 +52,13 @@ HELP = """<b>Админ-панель</b>
 /check &lt;№ локального заказа&gt; — сверить заказ после сбоя сети
 /sporders — последние заказы в Steel Proxy
 /reload — сбросить кэш каталога и цен
-/broadcast — ответьте этой командой на сообщение, чтобы разослать его всем"""
+/broadcast — ответьте этой командой на сообщение, чтобы разослать его всем
+
+<b>Поддержка и документы</b>
+Ответ на обращение — реплай на сообщение с обращением.
+/tickets — открытые обращения
+/publish — опубликовать соглашение, политику и цены на telegra.ph (ссылки для банка)
+/deluser &lt;id|@username&gt; — удалить персональные данные пользователя по его запросу"""
 
 
 @router.message(Command("admin"))
@@ -216,6 +222,87 @@ async def broadcast(message: Message, db: Database, bot: Bot):
             pass
         await asyncio.sleep(0.05)  # ~20 сообщений/с, в пределах лимитов Telegram
     await message.answer(f"Рассылка завершена: доставлено {ok} из {len(ids)}.")
+
+
+# ============================ поддержка и документы ============================
+
+class IsTicketReply(BaseFilter):
+    """Админ ответил реплаем на сообщение, относящееся к обращению."""
+
+    async def __call__(self, message: Message, db: Database) -> bool | dict:
+        r = message.reply_to_message
+        if not r or (message.text or "").startswith("/"):
+            return False
+        ticket = await db.ticket_by_message(message.chat.id, r.message_id)
+        return {"ticket": ticket} if ticket else False
+
+
+@router.message(IsTicketReply())
+async def ticket_reply(message: Message, ticket, db: Database, bot: Bot):
+    from .info import reply_to_user
+    try:
+        await reply_to_user(bot, db, ticket, message)
+    except Exception as exc:
+        await message.reply(f"Не удалось отправить: {esc(exc)}")
+        return
+    await message.reply(f"✅ Ответ по обращению #{ticket['id']} отправлен.")
+
+
+@router.message(Command("tickets"))
+async def tickets(message: Message, db: Database):
+    rows = await db.open_tickets()
+    if not rows:
+        await message.answer("Открытых обращений нет.")
+        return
+    lines = ["<b>Открытые обращения</b> (ответьте реплаем на сообщение с обращением):"]
+    for t in rows:
+        u = await db.get_user(t["user_id"])
+        who = f"@{u['username']}" if u and u["username"] else str(t["user_id"])
+        lines.append(f"#{t['id']} · {esc(who)} · обновлено {esc(t['updated_at'][:16].replace('T', ' '))}")
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("publish"))
+async def publish_docs(message: Message, db: Database, cfg: Config, shop: Shop, bot: Bot):
+    from .. import docs, telegraph
+    from .info import build_doc, doc_context
+    ctx = await doc_context(bot, cfg)
+    missing = ctx.missing()
+    if missing:
+        await message.answer("Сначала заполните в .env и перезапустите бота "
+                             "(<code>docker compose up -d</code>):\n• " +
+                             "\n• ".join(esc(m) for m in missing))
+        return
+    await message.answer("⏳ Публикую на telegra.ph…")
+    try:
+        pages = {}
+        for name in ("terms", "privacy", "prices"):
+            title, blocks = await build_doc(name, bot, cfg, shop)
+            pages[name] = (title, docs.to_telegraph(blocks))
+        urls = await telegraph.publish(db, telegraph.Telegraph(proxy=cfg.telegram_proxy), pages,
+                                       author=cfg.shop_name, author_url=f"https://t.me/{ctx.bot_username}")
+    except (telegraph.TelegraphError, SteelProxyError) as exc:
+        await message.answer(f"❌ Не удалось опубликовать: {esc(exc)}")
+        return
+    await message.answer(
+        "✅ Опубликовано. Ссылки для банка:\n\n"
+        f"Пользовательское соглашение: {urls['terms']}\n"
+        f"Политика конфиденциальности: {urls['privacy']}\n"
+        f"Цены и тарифы: {urls['prices']}\n\n"
+        "Ссылки постоянные. Страница цен обновляется сама раз в 6 часов; после правки "
+        ".env запустите /publish ещё раз.", disable_web_page_preview=True)
+
+
+@router.message(Command("deluser"))
+async def deluser(message: Message, command: CommandObject, db: Database):
+    u = await _target(message, db, command.args)
+    if not u:
+        return
+    await db.forget_user(u["id"])
+    await message.answer(f"Персональные данные пользователя <code>{u['id']}</code> удалены: "
+                         "имя, @username и обращения. Заказы и платежи остались без имени.\n"
+                         "Если он снова напишет боту, Telegram передаст имя заново — "
+                         "чтобы этого не было, заблокируйте: /ban " + str(u["id"]))
 
 
 @router.callback_query(TopupDecisionCB.filter())

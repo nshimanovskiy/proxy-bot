@@ -41,6 +41,12 @@ ask() {  # ask ПЕРЕМЕННАЯ "Вопрос" ПРИЗНАК_ЗАГЛУШК
 ask BOT_TOKEN "Токен бота от @BotFather" "ABC..."
 ask STEELPROXY_API_KEY "API-ключ Steel Proxy (Ф-бот → Профиль → API-ключ)" "XXXX"
 ask ADMIN_IDS "Ваш Telegram ID (несколько — через запятую; узнать: @userinfobot)" "123456789"
+ask SUPPORT_CONTACT "Контакт поддержки — @username (не группа)" "@your_support"
+ask OPERATOR_NAME "Продавец для документов, как в договоре с банком (ИП Иванов И. И. / Самозанятый …)" "__none__"
+grep -q '^SUPPORT_EMAIL=' .env && [[ "$(envval SUPPORT_EMAIL)" != *example.com* ]] || {
+  read -rp "Почта поддержки (Enter — пропустить): " em </dev/tty || em=""
+  set_env SUPPORT_EMAIL "$em"
+}
 
 TOKEN="$(envval BOT_TOKEN)"
 [[ "$TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || warn "Токен бота выглядит странно — проверьте BOT_TOKEN в .env"
@@ -59,6 +65,7 @@ esac
 echo
 echo "Наценку, реквизиты для оплаты, контакт поддержки и название магазина"
 echo "можно поменять в ${DIR}/.env (MARKUP_PERCENT, PAYMENT_INFO, SUPPORT_CONTACT, SHOP_NAME)."
+echo "Данные для документов: OPERATOR_NAME, OPERATOR_INN, SUPPORT_EMAIL. Ссылки для банка — /publish в боте."
 
 # ---------- Запуск ----------
 say "Сборка и запуск"
