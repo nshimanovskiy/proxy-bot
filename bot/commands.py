@@ -21,6 +21,7 @@ USER_COMMANDS: list[tuple[str, str, str]] = [
 ADMIN_COMMANDS: list[tuple[str, str, str]] = [
     ("admin", "", "Админ-панель (этот список)"),
     ("stats", "", "Статистика продаж и прибыль"),
+    ("users", "[поиск]", "Все пользователи списком, выгрузка в CSV"),
     ("user", "<id|@username>", "Карточка пользователя"),
     ("give", "<id|@username> <сумма>", "Начислить на баланс"),
     ("take", "<id|@username> <сумма>", "Списать с баланса"),

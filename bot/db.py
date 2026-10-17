@@ -127,6 +127,8 @@ class Database:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self.conn = await aiosqlite.connect(self.path)
         self.conn.row_factory = aiosqlite.Row
+        # lower() в SQLite понимает только латиницу — для поиска по русским именам свой
+        await self.conn.create_function("pylower", 1, lambda v: v.lower() if isinstance(v, str) else v)
         await self.conn.executescript(SCHEMA)
         await self.conn.commit()
 
@@ -160,6 +162,28 @@ class Database:
         if query.isdigit():
             return await self.get_user(int(query))
         return await self._one("SELECT * FROM users WHERE lower(username)=lower(?)", query)
+
+    _USERS_WHERE = """WHERE (:q = '' OR pylower(u.username) LIKE :like
+                        OR pylower(u.first_name) LIKE :like OR CAST(u.id AS TEXT) LIKE :like)"""
+
+    async def list_users(self, query: str = "", limit: int = 10,
+                         offset: int = 0) -> list[aiosqlite.Row]:
+        """Пользователи с числом заказов и суммой покупок, новые сверху."""
+        q = query.strip().lstrip("@").lower()
+        async with self.conn.execute(
+                f"""SELECT u.*, COUNT(o.id) AS orders, COALESCE(SUM(o.price), 0) AS spent
+                    FROM users u LEFT JOIN orders o ON o.user_id = u.id AND o.status = 'active'
+                    {self._USERS_WHERE}
+                    GROUP BY u.id ORDER BY u.created_at DESC, u.id DESC
+                    LIMIT :limit OFFSET :offset""",
+                {"q": q, "like": f"%{q}%", "limit": limit, "offset": offset}) as cur:
+            return list(await cur.fetchall())
+
+    async def count_users(self, query: str = "") -> int:
+        q = query.strip().lstrip("@").lower()
+        async with self.conn.execute(f"SELECT COUNT(*) c FROM users u {self._USERS_WHERE}",
+                                     {"q": q, "like": f"%{q}%"}) as cur:
+            return int((await cur.fetchone())["c"])
 
     async def set_banned(self, user_id: int, banned: bool) -> None:
         await self.conn.execute("UPDATE users SET banned=? WHERE id=?", (int(banned), user_id))

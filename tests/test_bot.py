@@ -271,6 +271,49 @@ class BotScenarioTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(u["username"])
         self.assertEqual((await self.db._one("SELECT COUNT(*) c FROM tickets"))["c"], 0)
 
+    async def test_users_list(self):
+        for i in range(25):
+            await self.db.upsert_user(1000 + i, f"user_{i}", f"Покупатель {i}")
+        await self.db.upsert_user(2000, None, "Иван Петров")
+        await self.db.change_balance(2000, 15000, "admin")
+        await self.db.set_banned(1003, True)
+
+        self.assertEqual(await self.send(BUYER, "/users"), [])   # не админ — молчит
+
+        calls = await self.send(ADMIN, "/users")
+        text = self.texts(calls)
+        self.assertIn("Пользователи</b>: 28", text)   # 26 + покупатель и админ, писавшие боту
+        self.assertIn("Стр. 1/3", text)
+        self.assertIn("Иван Петров · <code>2000</code>", text)  # новые сверху
+        self.assertIn("баланс 150 ₽", text)
+        btns = self.buttons(calls)
+        self.assertEqual([b for b in btns if b.isdigit()], [str(i) for i in range(1, 11)])
+        self.assertIn("📄 Выгрузить всех в CSV", btns)
+
+        calls = await self.press(ADMIN, self.find(btns, "Вперёд"))
+        text = self.texts(calls)
+        self.assertIn("Стр. 2/3", text)
+        calls = await self.press(ADMIN, self.find(self.buttons(calls), "Вперёд"))
+        self.assertIn("Стр. 3/3", self.texts(calls))
+        self.assertIn("@user_3 🚫", self.texts(calls))
+
+        # поиск по-русски без учёта регистра, по @username и по ID
+        calls = await self.send(ADMIN, "/users иван")
+        self.assertIn("«иван»: 1", self.texts(calls))
+        calls = await self.press(ADMIN, self.find(self.buttons(calls), "1"))
+        self.assertIn("ID: <code>2000</code>", self.texts(calls))
+        self.assertIn("/give 2000", self.texts(calls))
+        self.assertIn(": 1", self.texts(await self.send(ADMIN, "/users @user_24")))
+        self.assertIn("не найдено", self.texts(await self.send(ADMIN, "/users zzz")))
+
+        calls = await self.press(ADMIN, self.find(self.buttons(await self.send(ADMIN, "/users")), "CSV"))
+        doc = next(c for c in calls if isinstance(c, SendDocument))
+        self.assertEqual(doc.caption, "Пользователей: 28")
+        self.assertEqual(doc.document.filename, "users.csv")
+        csv_text = doc.document.data.decode("utf-8-sig")
+        self.assertIn("2000;;Иван Петров;150,00;0;0,00;", csv_text)
+        self.assertEqual(len(csv_text.strip().splitlines()), 29)
+
     async def test_topup_mentions_terms(self):
         await self.send(BUYER, "/start")
         calls = await self.send(BUYER, BTN_BALANCE)

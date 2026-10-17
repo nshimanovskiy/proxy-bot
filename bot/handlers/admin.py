@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from aiogram import Bot, F, Router
 from aiogram.filters import BaseFilter, Command, CommandObject
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import CallbackQuery, InlineKeyboardButton, Message, TelegramObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..config import Config
@@ -79,17 +79,112 @@ async def _target(message: Message, db: Database, arg: str | None):
     return user
 
 
+USERS_PAGE = 10
+
+
+class UsersCB(CallbackData, prefix="us"):
+    act: str          # page / card / csv
+    p: int = 0        # страница
+    id: int = 0       # пользователь
+    q: str = ""       # поиск
+
+
+def user_card_text(u, orders: int) -> str:
+    return (f"<b>{esc(u['first_name'] or '—')}</b> (@{esc(u['username'] or '—')})\n"
+            f"ID: <code>{u['id']}</code>\nБаланс: {fmt_rub(u['balance'])}\n"
+            f"Заказов: {orders}\nЗаблокирован: {'да' if u['banned'] else 'нет'}\n"
+            f"С нами с: {esc(u['created_at'][:10])}")
+
+
 @router.message(Command("user"))
 async def user_card(message: Message, command: CommandObject, db: Database):
     u = await _target(message, db, command.args)
     if not u:
         return
-    n = await db.count_user_orders(u["id"])
-    await message.answer(
-        f"<b>{esc(u['first_name'])}</b> (@{esc(u['username'] or '—')})\n"
-        f"ID: <code>{u['id']}</code>\nБаланс: {fmt_rub(u['balance'])}\n"
-        f"Заказов: {n}\nЗаблокирован: {'да' if u['banned'] else 'нет'}\n"
-        f"С нами с: {esc(u['created_at'][:10])}")
+    await message.answer(user_card_text(u, await db.count_user_orders(u["id"])))
+
+
+async def users_page(db: Database, page: int, query: str = ""):
+    total = await db.count_users(query)
+    if not total:
+        return ("Пользователей не найдено." if query else "Пользователей пока нет."), None
+    pages = -(-total // USERS_PAGE)
+    page = max(0, min(page, pages - 1))
+    rows = await db.list_users(query, USERS_PAGE, page * USERS_PAGE)
+    title = f"<b>Пользователи</b>{f' по запросу «{esc(query)}»' if query else ''}: {total}"
+    lines = [title, f"Стр. {page + 1}/{pages}, новые сверху\n"]
+    kb = InlineKeyboardBuilder()
+    for i, u in enumerate(rows, 1):
+        name = f"@{u['username']}" if u["username"] else (u["first_name"] or "—")
+        ban = " 🚫" if u["banned"] else ""
+        lines.append(f"{i}. {esc(name)}{ban} · <code>{u['id']}</code>\n"
+                     f"    баланс {fmt_rub(u['balance'])} · заказов {u['orders']} "
+                     f"на {fmt_rub(u['spent'])} · с {esc(u['created_at'][:10])}")
+        kb.button(text=str(i), callback_data=UsersCB(act="card", id=u["id"]))
+    kb.adjust(5)
+    nav = []
+    q = query[:20]
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="‹ Назад",
+                                        callback_data=UsersCB(act="page", p=page - 1, q=q).pack()))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton(text="Вперёд ›",
+                                        callback_data=UsersCB(act="page", p=page + 1, q=q).pack()))
+    if nav:
+        kb.row(*nav)
+    kb.row(InlineKeyboardButton(text="📄 Выгрузить всех в CSV",
+                                callback_data=UsersCB(act="csv", q=q).pack()))
+    lines.append("\nКарточка — кнопка с номером. Поиск: /users имя, @username или ID.")
+    return "\n".join(lines), kb.as_markup()
+
+
+@router.message(Command("users"))
+async def users_list(message: Message, command: CommandObject, db: Database):
+    text, kb = await users_page(db, 0, (command.args or "").strip())
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(UsersCB.filter(F.act == "page"))
+async def users_list_page(call: CallbackQuery, callback_data: UsersCB, db: Database):
+    text, kb = await users_page(db, callback_data.p, callback_data.q)
+    await call.message.edit_text(text, reply_markup=kb)
+    await call.answer()
+
+
+@router.callback_query(UsersCB.filter(F.act == "card"))
+async def users_card(call: CallbackQuery, callback_data: UsersCB, db: Database):
+    u = await db.get_user(callback_data.id)
+    await call.answer()
+    if not u:
+        await call.message.answer("Пользователь не найден.")
+        return
+    await call.message.answer(
+        user_card_text(u, await db.count_user_orders(u["id"])) +
+        f"\n\n/give {u['id']} сумма · /take {u['id']} сумма · "
+        f"/{'unban' if u['banned'] else 'ban'} {u['id']}")
+
+
+@router.callback_query(UsersCB.filter(F.act == "csv"))
+async def users_csv(call: CallbackQuery, callback_data: UsersCB, db: Database):
+    import csv
+    import io
+    from aiogram.types import BufferedInputFile
+    await call.answer("Готовлю файл…")
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["id", "username", "имя", "баланс ₽", "заказов", "потрачено ₽",
+                "дата регистрации", "заблокирован"])
+    offset = 0
+    while rows := await db.list_users(callback_data.q, 500, offset):
+        for u in rows:
+            w.writerow([u["id"], u["username"] or "", u["first_name"] or "",
+                        f"{u['balance'] / 100:.2f}".replace(".", ","), u["orders"],
+                        f"{u['spent'] / 100:.2f}".replace(".", ","), u["created_at"][:19],
+                        "да" if u["banned"] else "нет"])
+        offset += len(rows)
+    data = ("\ufeff" + buf.getvalue()).encode()   # BOM — чтобы Excel открыл кириллицу
+    await call.message.answer_document(BufferedInputFile(data, filename="users.csv"),
+                                       caption=f"Пользователей: {offset}")
 
 
 async def _money(message: Message, command: CommandObject, db: Database, bot: Bot, sign: int):
